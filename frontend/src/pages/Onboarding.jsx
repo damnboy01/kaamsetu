@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Camera, Mic, CheckCircle, Sprout, Trees, ScanLine } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { TEXTS, SKILL_CATEGORIES } from '../data';
+import { TEXTS, SKILL_CATEGORIES } from '../constants/data';
 import { Button } from '../components/UI';
 
 const speak = (text, lang) => {

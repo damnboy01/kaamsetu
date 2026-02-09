@@ -1,7 +1,7 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Briefcase } from 'lucide-react';
-import { TEXTS } from '../data';
+import { TEXTS } from '../constants/data';
 import { Button } from '../components/UI';
 
 export default function Login({ lang, setLang }) {

@@ -3,8 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { collection, addDoc, onSnapshot, query, orderBy, deleteDoc, doc } from 'firebase/firestore';
 import { Briefcase, MapPin, IndianRupee, LogOut, Send, MessageSquare, Trash2, PlusCircle, CheckCircle, User } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { db } from '../firebase';
-import { TEXTS } from '../data';
+import { db } from '../config/firebaseConfig';
+import { TEXTS } from '../constants/data';
 import { Button } from '../components/UI';
 
 export default function Dashboard({ lang }) {

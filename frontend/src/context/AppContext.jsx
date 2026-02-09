@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useMemo, useState, useEffect } from 'react';
 import { toast } from 'react-hot-toast';
 import { collection, addDoc, onSnapshot, query, orderBy } from 'firebase/firestore';
-import { db } from '../firebase';
+import { db } from '../config/firebaseConfig';
 
 const AppContext = createContext();
 
