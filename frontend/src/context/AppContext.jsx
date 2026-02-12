@@ -1,7 +1,8 @@
-import React, { createContext, useContext, useMemo, useState, useEffect } from 'react';
+import React, { createContext, useContext, useMemo, useState, useEffect, useRef } from 'react';
 import { toast } from 'react-hot-toast';
-import { collection, addDoc, onSnapshot, query, orderBy } from 'firebase/firestore';
-import { db } from '../config/firebaseConfig';
+import { collection, addDoc, onSnapshot, query, orderBy, doc, getDoc, setDoc, serverTimestamp, where, getDocs, writeBatch, updateDoc } from 'firebase/firestore';
+import { RecaptchaVerifier, signInWithPhoneNumber } from 'firebase/auth';
+import { auth, db } from '../config/firebase';
 
 const AppContext = createContext();
 
@@ -58,9 +59,15 @@ export const AppProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [pendingUser, setPendingUser] = useState(null);
   const [otpSent, setOtpSent] = useState(false);
+  const [authRoute, setAuthRoute] = useState('/dashboard');
   const [jobs, setJobs] = useState([]);
+  const [appliedJobs, setAppliedJobs] = useState({});
+  const [jobApplicants, setJobApplicants] = useState({});
+  const [jobApplicantsLoading, setJobApplicantsLoading] = useState({});
   const [workers] = useState(mockWorkers);
   const [identityVerified, setIdentityVerified] = useState(false);
+  const confirmationResultRef = useRef(null);
+  const applicantUnsubscribersRef = useRef({});
 
   // Listen to jobs collection in real-time
   useEffect(() => {
@@ -81,28 +88,139 @@ export const AppProvider = ({ children }) => {
     return () => unsubscribe();
   }, []);
 
-  const sendOtp = (phone, role) => {
-    if (!phone) return toast.error('Enter phone number');
-    setPendingUser({ phone, role });
-    setOtpSent(true);
-    toast.success('OTP sent (1234)');
+  const ensureRecaptchaContainer = () => {
+    if (typeof window === 'undefined') return null;
+    const existing = document.getElementById('recaptcha-container');
+    if (existing) return existing;
+    const container = document.createElement('div');
+    container.id = 'recaptcha-container';
+    container.style.position = 'absolute';
+    container.style.top = '-9999px';
+    container.style.left = '-9999px';
+    container.style.width = '1px';
+    container.style.height = '1px';
+    container.style.opacity = '0';
+    document.body.appendChild(container);
+    return container;
   };
 
-  const verifyOtp = (code) => {
-    if (code === '1234' && pendingUser) {
-      setUser(pendingUser);
+  const getRecaptchaVerifier = () => {
+    if (window.recaptchaVerifier) return window.recaptchaVerifier;
+
+    const container = ensureRecaptchaContainer();
+    if (!container) return null;
+
+    window.recaptchaVerifier = new RecaptchaVerifier(
+      auth,
+      'recaptcha-container',
+      { size: 'invisible' }
+    );
+
+    return window.recaptchaVerifier;
+  };
+
+  const normalizePhoneNumber = (input) => {
+    const trimmed = input.trim();
+    if (!trimmed) return null;
+    if (trimmed.startsWith('+')) return trimmed;
+    const digits = trimmed.replace(/\D/g, '');
+    if (digits.length === 10) return `+91${digits}`;
+    if (digits.length > 10) return `+${digits}`;
+    return null;
+  };
+
+  const verifyUserWithBackend = async (token) => {
+    const response = await fetch('http://localhost:5050/auth/verify-user', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+
+    if (!response.ok) {
+      throw new Error('User verification failed');
+    }
+
+    const payload = await response.json();
+    console.log('Auth verify-user response:', payload);
+    return payload;
+  };
+
+  const sendOtp = async (phone, role) => {
+    const normalizedPhone = normalizePhoneNumber(phone);
+    if (!normalizedPhone) {
+      toast.error('Enter a valid phone number');
+      return;
+    }
+    try {
+      const verifier = getRecaptchaVerifier();
+      if (!verifier) {
+        toast.error('reCAPTCHA unavailable');
+        return;
+      }
+      const confirmationResult = await signInWithPhoneNumber(auth, normalizedPhone, verifier);
+      confirmationResultRef.current = confirmationResult;
+      window.confirmationResult = confirmationResult;
+      console.log('Stored confirmationResult globally:', !!window.confirmationResult);
+      setPendingUser({ phone: normalizedPhone, role });
+      setOtpSent(true);
+      toast.success('OTP sent');
+    } catch (error) {
+      console.error('Error sending OTP:', error);
+      setOtpSent(false);
+      toast.error('Failed to send OTP');
+      if (window.recaptchaVerifier) {
+        window.recaptchaVerifier.clear();
+        window.recaptchaVerifier = null;
+      }
+    }
+  };
+
+  const verifyOtp = async (otpInput) => {
+    const otp = String(otpInput).trim();
+    if (!otp) {
+      toast.error('Enter OTP');
+      return false;
+    }
+    console.log('OTP being verified:', otp);
+    console.log('confirmationResult exists:', !!window.confirmationResult);
+    if (!window.confirmationResult || !pendingUser) {
+      toast.error('Please request OTP first');
+      return false;
+    }
+    try {
+      const result = await window.confirmationResult.confirm(otp);
+      const token = await result.user.getIdToken();
+      localStorage.setItem('kaamsetu_token', token);
+      const backendData = await verifyUserWithBackend(token);
+      const isIncompleteProfile = !backendData?.user?.role;
+
+      const route = (backendData?.isNewUser || isIncompleteProfile)
+        ? '/onboarding'
+        : '/dashboard';
+      console.log("Auth routing decision:", {
+        isNewUser: backendData?.isNewUser,
+        role: backendData?.user?.role,
+        route
+      });
+      setAuthRoute(route);
+      setUser(backendData?.user || pendingUser);
+      setPendingUser(null);
       setOtpSent(false);
       toast.success('Logged in');
       return true;
+    } catch (error) {
+      console.error('Error verifying OTP:', error);
+      toast.error('Incorrect OTP');
+      return false;
     }
-    toast.error('Incorrect OTP');
-    return false;
   };
 
   const logout = () => {
     setUser(null);
     setPendingUser(null);
     setOtpSent(false);
+    setAuthRoute('/dashboard');
+    localStorage.removeItem('kaamsetu_token');
   };
 
   const topMatches = useMemo(
@@ -145,10 +263,152 @@ export const AppProvider = ({ children }) => {
     toast.success('Dispute submitted');
   };
 
-  const applyToJob = (jobId) => {
+  const markJobCompleted = async (jobId) => {
+    try {
+      const jobRef = doc(db, 'jobs', jobId);
+      await updateDoc(jobRef, {
+        status: 'completed',
+        completedAt: serverTimestamp(),
+      });
+      toast.success('Job marked as completed');
+      return true;
+    } catch (error) {
+      console.error('Error completing job:', error);
+      toast.error('Failed to complete job');
+      return false;
+    }
+  };
+
+  const applyToJob = async (jobId) => {
+    if (!user) return false;
+    const workerId = user.firebaseUid || user.phone;
+    if (!workerId) {
+      toast.error('Unable to identify worker');
+      return false;
+    }
+    console.log('Applying job:', jobId);
+    console.log('Worker:', user);
     const job = jobs.find((j) => j.id === jobId);
-    if (!job) return;
-    window.open(`https://wa.me/91${job.employerPhone}`, '_blank');
+    if (!job) return false;
+
+    try {
+      const applicationRef = doc(db, 'jobs', jobId, 'applications', String(workerId));
+      const existingApplication = await getDoc(applicationRef);
+      if (existingApplication.exists()) {
+        setAppliedJobs((prev) => ({ ...prev, [jobId]: true }));
+        toast.success('Already applied');
+        return true;
+      }
+
+      await setDoc(applicationRef, {
+        workerId,
+        workerName: user.name || 'Worker',
+        workerPhone: user.phone,
+        appliedAt: serverTimestamp(),
+        status: 'pending',
+      });
+
+      setAppliedJobs((prev) => ({ ...prev, [jobId]: true }));
+      toast.success('Applied successfully');
+      window.open(`https://wa.me/91${job.employerPhone}`, '_blank');
+      return true;
+    } catch (error) {
+      console.error('Error applying to job:', error);
+      toast.error('Failed to apply');
+      return false;
+    }
+  };
+
+  const isJobApplied = (jobId) => Boolean(appliedJobs[jobId]);
+
+  const subscribeToJobApplicants = (jobId) => {
+    if (!jobId) return () => {};
+    if (applicantUnsubscribersRef.current[jobId]) {
+      return applicantUnsubscribersRef.current[jobId];
+    }
+
+    setJobApplicantsLoading((prev) => ({ ...prev, [jobId]: true }));
+    const applicantsRef = collection(db, 'jobs', jobId, 'applications');
+    const unsubscribe = onSnapshot(
+      applicantsRef,
+      (snapshot) => {
+        const applicants = snapshot.docs.map((docSnap) => ({
+          id: docSnap.id,
+          ...docSnap.data(),
+        }));
+        setJobApplicants((prev) => ({ ...prev, [jobId]: applicants }));
+        setJobApplicantsLoading((prev) => ({ ...prev, [jobId]: false }));
+      },
+      (error) => {
+        console.error('Error fetching applicants:', error);
+        setJobApplicantsLoading((prev) => ({ ...prev, [jobId]: false }));
+        toast.error('Failed to load applicants');
+      }
+    );
+
+    const wrappedUnsubscribe = () => {
+      unsubscribe();
+      delete applicantUnsubscribersRef.current[jobId];
+    };
+
+    applicantUnsubscribersRef.current[jobId] = wrappedUnsubscribe;
+    return wrappedUnsubscribe;
+  };
+
+  const unsubscribeFromJobApplicants = (jobId) => {
+    if (!jobId) return;
+    const unsubscribe = applicantUnsubscribersRef.current[jobId];
+    if (unsubscribe) {
+      unsubscribe();
+    }
+  };
+
+  const getJobApplicants = (jobId) => jobApplicants[jobId] || [];
+  const isJobApplicantsLoading = (jobId) => Boolean(jobApplicantsLoading[jobId]);
+
+  const assignWorkerToJob = async (jobId, applicant) => {
+    if (!jobId || !applicant?.workerId) return false;
+
+    try {
+      const activeAssignedJobsQuery = query(
+        collection(db, 'jobs'),
+        where('assignedWorkerId', '==', applicant.workerId),
+        where('status', '==', 'assigned')
+      );
+      const activeAssignedJobs = await getDocs(activeAssignedJobsQuery);
+      const isAssignedElsewhere = activeAssignedJobs.docs.some((jobDoc) => jobDoc.id !== jobId);
+
+      if (isAssignedElsewhere) {
+        toast.error('Worker already assigned in another job');
+        return false;
+      }
+
+      const applicants = getJobApplicants(jobId);
+      const batch = writeBatch(db);
+      const jobRef = doc(db, 'jobs', jobId);
+
+      batch.update(jobRef, {
+        status: 'assigned',
+        assignedWorkerId: applicant.workerId,
+        assignedWorkerName: applicant.workerName || 'Worker',
+        assignedAt: serverTimestamp(),
+      });
+
+      applicants.forEach((item) => {
+        const applicationRef = doc(db, 'jobs', jobId, 'applications', item.id);
+        batch.update(applicationRef, {
+          status: item.id === applicant.id ? 'accepted' : 'rejected',
+        });
+      });
+
+      await batch.commit();
+      toast.success('Worker assigned successfully');
+      return true;
+    } catch (error) {
+      console.error('Error assigning worker:', error);
+      toast.error('Failed to assign worker');
+      return false;
+    }
   };
 
   const verifyIdentity = () => {
@@ -156,13 +416,27 @@ export const AppProvider = ({ children }) => {
     toast.success('Aadhaar verified');
   };
 
+  const completeOnboarding = () => {
+    setAuthRoute('/dashboard');
+  };
+
+  const finalizeAuthSession = (nextUser, route) => {
+    setUser(nextUser || null);
+    setPendingUser(null);
+    setOtpSent(false);
+    setAuthRoute(route === '/onboarding' ? '/onboarding' : '/dashboard');
+  };
+
   const value = {
     language,
     setLanguage,
     user,
+    authRoute,
     otpSent,
     sendOtp,
     verifyOtp,
+    completeOnboarding,
+    finalizeAuthSession,
     logout,
     jobs,
     workers,
@@ -170,7 +444,13 @@ export const AppProvider = ({ children }) => {
     postJob,
     lockFee,
     disputeJob,
+    markJobCompleted,
     applyToJob,
+    subscribeToJobApplicants,
+    unsubscribeFromJobApplicants,
+    getJobApplicants,
+    isJobApplicantsLoading,
+    assignWorkerToJob,
     identityVerified,
     verifyIdentity,
   };

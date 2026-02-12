@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import { Toaster } from 'react-hot-toast';
+import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import {
   Phone,
   Lock,
@@ -27,6 +28,9 @@ import {
 } from 'lucide-react';
 import { useApp } from './context/AppContext';
 import { Button, Card, Modal } from './components/UI';
+import WorkerOnboarding from './pages/WorkerOnboarding';
+import EmployerOnboarding from './pages/onboarding/EmployerOnboarding';
+import { db } from './config/firebase';
 
 const TEXT = {
   en: {
@@ -156,9 +160,9 @@ const LoginView = React.memo(({
                 <input
                   ref={otpInputRef}
                   type="text"
-                  maxLength={4}
+                  maxLength={6}
                   className="w-full border rounded-xl px-4 py-3 font-semibold mt-1"
-                  placeholder="1234"
+                  placeholder="123456"
                   value={otp}
                   onChange={onOtpChange}
                   autoComplete="one-time-code"
@@ -187,9 +191,11 @@ export default function App() {
     language,
     setLanguage,
     user,
+    authRoute,
     otpSent,
     sendOtp,
     verifyOtp,
+    finalizeAuthSession,
     logout,
     jobs,
     workers,
@@ -197,7 +203,13 @@ export default function App() {
     postJob,
     lockFee,
     disputeJob,
+    markJobCompleted,
     applyToJob,
+    subscribeToJobApplicants,
+    unsubscribeFromJobApplicants,
+    getJobApplicants,
+    isJobApplicantsLoading,
+    assignWorkerToJob,
     identityVerified,
     verifyIdentity,
   } = useApp();
@@ -206,11 +218,15 @@ export default function App() {
   const [role, setRole] = useState('worker');
   const [phone, setPhone] = useState('');
   const [otp, setOtp] = useState('');
+  const [appliedJobs, setAppliedJobs] = useState({});
   const [postModal, setPostModal] = useState(false);
   const [paymentJob, setPaymentJob] = useState(null);
   const [workerModal, setWorkerModal] = useState(null);
+  const [applicantsJobId, setApplicantsJobId] = useState(null);
   const [disputeJobId, setDisputeJobId] = useState(null);
   const [justPostedJob, setJustPostedJob] = useState(null);
+  const [completingJobId, setCompletingJobId] = useState(null);
+  const [activeAssignedJob, setActiveAssignedJob] = useState(null);
 
   // Reset form when user logs out
   useEffect(() => {
@@ -218,6 +234,8 @@ export default function App() {
       setPhone('');
       setOtp('');
       setRole('worker');
+      setAppliedJobs({});
+      setActiveAssignedJob(null);
       setActiveTab('home');
     } else {
       // Reset to home when user logs in
@@ -225,7 +243,44 @@ export default function App() {
     }
   }, [user]);
 
+  useEffect(() => {
+    if (!user || user.role !== 'worker') {
+      setActiveAssignedJob(null);
+      return;
+    }
+
+    const currentUserId = user.firebaseUid || user.phone || user._id;
+    if (!currentUserId) {
+      setActiveAssignedJob(null);
+      return;
+    }
+
+    const assignedJobQuery = query(
+      collection(db, 'jobs'),
+      where('assignedWorkerId', '==', currentUserId),
+      where('status', '==', 'assigned')
+    );
+
+    const unsubscribe = onSnapshot(
+      assignedJobQuery,
+      (snapshot) => {
+        if (snapshot.empty) {
+          setActiveAssignedJob(null);
+          return;
+        }
+        const firstAssignedJob = snapshot.docs[0];
+        setActiveAssignedJob({ id: firstAssignedJob.id, ...firstAssignedJob.data() });
+      },
+      (error) => {
+        console.error('Error fetching assigned job:', error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [user]);
+
   const t = TEXT[language];
+  const onboardingRole = user?.role || role;
 
   const employerJobs = useMemo(() => jobs.filter((j) => j.employerPhone === user?.phone), [jobs, user]);
   const openJobs = useMemo(() => jobs.filter((j) => j.status === 'open'), [jobs]);
@@ -242,19 +297,78 @@ export default function App() {
     setRole(newRole);
   }, []);
 
-  const handleSendOtp = useCallback(() => {
-    sendOtp(phone, role);
-  }, [phone, role, sendOtp]);
-
-  const handleVerifyOtp = useCallback(() => {
-    if (verifyOtp(otp)) {
-      setOtp('');
-    }
-  }, [otp, verifyOtp]);
-
   const handleLanguageToggle = useCallback(() => {
     setLanguage(language === 'en' ? 'hi' : 'en');
   }, [language]);
+
+  const handleOnboardingSuccess = useCallback(async () => {
+    const token = localStorage.getItem('kaamsetu_token');
+    if (!token) return;
+
+    const res = await fetch('/auth/verify-user', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ token })
+    });
+
+    const data = await res.json();
+    finalizeAuthSession(data.user, '/dashboard');
+  }, [finalizeAuthSession]);
+
+  const handleApplyToJob = useCallback(async (jobId) => {
+    const applied = await applyToJob(jobId);
+    if (applied) {
+      setAppliedJobs((prev) => ({ ...prev, [jobId]: true }));
+    }
+  }, [applyToJob]);
+
+  const handleMarkCompleted = useCallback(async (jobId) => {
+    setCompletingJobId(jobId);
+    await markJobCompleted(jobId);
+    setCompletingJobId(null);
+  }, [markJobCompleted]);
+
+  const handleOpenApplicants = useCallback((jobId) => {
+    subscribeToJobApplicants(jobId);
+    setApplicantsJobId(jobId);
+  }, [subscribeToJobApplicants]);
+
+  const handleCloseApplicants = useCallback(() => {
+    if (applicantsJobId) {
+      unsubscribeFromJobApplicants(applicantsJobId);
+    }
+    setApplicantsJobId(null);
+  }, [applicantsJobId, unsubscribeFromJobApplicants]);
+
+  const handleAssignApplicant = useCallback(async (applicant) => {
+    if (!applicantsJobId) return;
+    await assignWorkerToJob(applicantsJobId, applicant);
+  }, [applicantsJobId, assignWorkerToJob]);
+
+  const formatAppliedDate = useCallback((appliedAt) => {
+    if (!appliedAt) return 'Not available';
+    const date = typeof appliedAt?.toDate === 'function'
+      ? appliedAt.toDate()
+      : new Date(appliedAt);
+    if (Number.isNaN(date.getTime())) return 'Not available';
+    return date.toLocaleString('en-IN');
+  }, []);
+
+  const formatAssignedDate = useCallback((assignedAt) => {
+    if (!assignedAt) return 'Not available';
+    const date = typeof assignedAt?.toDate === 'function'
+      ? assignedAt.toDate()
+      : new Date(assignedAt);
+    if (Number.isNaN(date.getTime())) return 'Not available';
+    return date.toLocaleString('en-IN');
+  }, []);
+
+  const selectedApplicantsJob = useMemo(
+    () => jobs.find((job) => job.id === applicantsJobId),
+    [jobs, applicantsJobId]
+  );
 
   const Stat = ({ icon: Icon, label, value, sub }) => (
     <div className="flex-1 bg-white rounded-2xl p-4 border border-slate-100 shadow-sm flex items-center gap-3">
@@ -387,6 +501,14 @@ export default function App() {
             )}
 
             <div className="flex gap-2">
+              <Button
+                fullWidth
+                variant="outline"
+                icon={Users}
+                onClick={() => handleOpenApplicants(job.id)}
+              >
+                View Applicants
+              </Button>
               {job.status === 'open' && (
                 <Button fullWidth variant="primary" onClick={() => setPaymentJob(job)} icon={Wallet}>
                   {t.lockFee}
@@ -395,6 +517,25 @@ export default function App() {
               {job.status === 'booked' && (
                 <Button fullWidth variant="danger" onClick={() => { setDisputeJobId(job.id); }} icon={AlertTriangle}>
                   {t.dispute}
+                </Button>
+              )}
+              {job.status === 'assigned' && (
+                <Button
+                  fullWidth
+                  variant="primary"
+                  onClick={() => handleMarkCompleted(job.id)}
+                  disabled={completingJobId === job.id}
+                >
+                  Mark Completed
+                </Button>
+              )}
+              {job.status === 'completed' && (
+                <Button
+                  fullWidth
+                  variant="whatsapp"
+                  disabled
+                >
+                  ✔ Job Completed
                 </Button>
               )}
             </div>
@@ -407,6 +548,23 @@ export default function App() {
   const WorkerDashboard = () => (
     <div className="space-y-4 pb-24">
       <HeaderComponent />
+      {activeAssignedJob && (
+        <Card className="p-4 border-l-4 border-emerald-500">
+          <div className="flex items-start justify-between mb-3">
+            <p className="text-base font-bold text-slate-900">Active Job</p>
+            <span className="px-2 py-1 text-[11px] rounded-full font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+              {activeAssignedJob.status}
+            </span>
+          </div>
+          <p className="text-lg font-bold text-slate-900">{activeAssignedJob.title}</p>
+          <div className="text-sm text-slate-600 mt-2 space-y-1">
+            <p>Pay: ₹{activeAssignedJob.pay}</p>
+            <p>Location: {activeAssignedJob.location}</p>
+            <p>Employer Phone: {activeAssignedJob.employerPhone || 'Not available'}</p>
+            <p>Assigned At: {formatAssignedDate(activeAssignedJob.assignedAt)}</p>
+          </div>
+        </Card>
+      )}
       {!identityVerified && (
         <Card className="p-4 flex items-center gap-3 border-l-4 border-orange-500">
           <div className="p-3 rounded-xl bg-orange-50 text-orange-600">
@@ -431,6 +589,11 @@ export default function App() {
         <p className="font-semibold text-slate-800">Job Feed</p>
         {openJobs.map((job) => (
           <Card key={job.id} className="p-4 space-y-3">
+            {(() => {
+              const hasApplied = Boolean(appliedJobs[job.id]);
+              const hasActiveAssignedJob = Boolean(activeAssignedJob);
+              return (
+                <>
             <div className="flex items-start justify-between">
               <div>
                 <p className="font-bold text-slate-900 text-lg">{job.title}</p>
@@ -439,11 +602,27 @@ export default function App() {
                   <span className="flex items-center gap-1"><IndianRupee size={14} />{job.pay}</span>
                 </div>
               </div>
-              <StatusPill status={job.status} />
+              <div className="flex items-center gap-2">
+                {hasApplied && (
+                  <span className="px-2 py-1 text-[11px] rounded-full font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                    Applied
+                  </span>
+                )}
+                <StatusPill status={job.status} />
+              </div>
             </div>
-            <Button fullWidth variant="whatsapp" icon={MessageCircle} onClick={() => applyToJob(job.id)}>
-              {t.apply}
+            <Button
+              fullWidth
+              variant={hasApplied ? 'whatsapp' : hasActiveAssignedJob ? 'subtle' : 'primary'}
+              icon={MessageCircle}
+              onClick={() => handleApplyToJob(job.id)}
+              disabled={hasApplied || hasActiveAssignedJob}
+            >
+              {hasApplied ? '✔ Applied' : hasActiveAssignedJob ? 'Active Job In Progress' : 'Apply Now'}
             </Button>
+                </>
+              );
+            })()}
           </Card>
         ))}
       </div>
@@ -608,6 +787,11 @@ export default function App() {
             ) : (
               openJobs.map((job) => (
                 <Card key={job.id} className="p-4 space-y-3">
+                  {(() => {
+                    const hasApplied = Boolean(appliedJobs[job.id]);
+                    const hasActiveAssignedJob = Boolean(activeAssignedJob);
+                    return (
+                      <>
                   <div className="flex items-start justify-between">
                     <div>
                       <p className="font-bold text-slate-900 text-lg">{job.title}</p>
@@ -616,11 +800,27 @@ export default function App() {
                         <span className="flex items-center gap-1"><IndianRupee size={14} />{job.pay}/day</span>
                       </div>
                     </div>
-                    <StatusPill status={job.status} />
+                    <div className="flex items-center gap-2">
+                      {hasApplied && (
+                        <span className="px-2 py-1 text-[11px] rounded-full font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                          Applied
+                        </span>
+                      )}
+                      <StatusPill status={job.status} />
+                    </div>
                   </div>
-                  <Button fullWidth variant="whatsapp" icon={MessageCircle} onClick={() => applyToJob(job.id)}>
-                    {t.apply}
+                  <Button
+                    fullWidth
+                    variant={hasApplied ? 'whatsapp' : hasActiveAssignedJob ? 'subtle' : 'primary'}
+                    icon={MessageCircle}
+                    onClick={() => handleApplyToJob(job.id)}
+                    disabled={hasApplied || hasActiveAssignedJob}
+                  >
+                    {hasApplied ? '✔ Applied' : hasActiveAssignedJob ? 'Active Job In Progress' : 'Apply Now'}
                   </Button>
+                      </>
+                    );
+                  })()}
                 </Card>
               ))
             )}
@@ -664,12 +864,25 @@ export default function App() {
         onPhoneChange={handlePhoneChange}
         onOtpChange={handleOtpChange}
         onRoleChange={handleRoleChange}
-        onSendOtp={handleSendOtp}
-        onVerifyOtp={handleVerifyOtp}
+        onSendOtp={() => sendOtp(phone, role)}
+        onVerifyOtp={() => verifyOtp(otp)}
         onLanguageToggle={handleLanguageToggle}
       />
     </>
   );
+
+  if (authRoute === '/onboarding') {
+    return (
+      <>
+        <Toaster position="top-center" />
+        {onboardingRole === 'employer' ? (
+          <EmployerOnboarding />
+        ) : (
+          <WorkerOnboarding onSuccess={handleOnboardingSuccess} />
+        )}
+      </>
+    );
+  }
 
   if (!user || !user.role) {
     return (
@@ -750,6 +963,41 @@ export default function App() {
 
       <Modal open={!!workerModal} onClose={() => setWorkerModal(null)} title="Worker Profile">
         {workerModal && <WorkerProfile worker={workerModal} />}
+      </Modal>
+
+      <Modal open={!!applicantsJobId} onClose={handleCloseApplicants} title="Applicants">
+        {applicantsJobId && (
+          <div className="space-y-3">
+            {isJobApplicantsLoading(applicantsJobId) ? (
+              <p className="text-sm text-slate-500">Loading applicants...</p>
+            ) : getJobApplicants(applicantsJobId).length === 0 ? (
+              <p className="text-sm text-slate-500">No applicants yet</p>
+            ) : (
+              getJobApplicants(applicantsJobId).map((applicant) => (
+                <Card key={applicant.id} className="p-4 space-y-1">
+                  <p className="text-base font-semibold text-slate-900">{applicant.workerName || 'Worker'}</p>
+                  <p className="text-sm text-slate-600">{applicant.workerPhone || 'No phone available'}</p>
+                  <p className="text-xs text-slate-500">Applied: {formatAppliedDate(applicant.appliedAt)}</p>
+                  <span className="inline-flex px-2 py-1 text-[11px] rounded-full font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+                    {applicant.status || 'pending'}
+                  </span>
+                  <Button
+                    fullWidth
+                    className="mt-2"
+                    onClick={() => handleAssignApplicant(applicant)}
+                    disabled={selectedApplicantsJob?.status === 'assigned' || applicant.status !== 'pending'}
+                  >
+                    {selectedApplicantsJob?.status === 'assigned'
+                      ? 'Assigned'
+                      : applicant.status === 'accepted'
+                        ? 'Assigned'
+                        : 'Assign Worker'}
+                  </Button>
+                </Card>
+              ))
+            )}
+          </div>
+        )}
       </Modal>
 
       <Modal open={!!disputeJobId} onClose={() => setDisputeJobId(null)} title="Report Issue">
