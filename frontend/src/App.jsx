@@ -227,6 +227,10 @@ export default function App() {
   const [justPostedJob, setJustPostedJob] = useState(null);
   const [completingJobId, setCompletingJobId] = useState(null);
   const [activeAssignedJob, setActiveAssignedJob] = useState(null);
+  const [showRatingModal, setShowRatingModal] = useState(false);
+  const [selectedRating, setSelectedRating] = useState(0);
+  const [reviewText, setReviewText] = useState('');
+  const [jobToComplete, setJobToComplete] = useState(null);
 
   // Reset form when user logs out
   useEffect(() => {
@@ -324,11 +328,21 @@ export default function App() {
     }
   }, [applyToJob]);
 
-  const handleMarkCompleted = useCallback(async (jobId) => {
-    setCompletingJobId(jobId);
-    await markJobCompleted(jobId);
+  const handleMarkCompleted = useCallback((jobId) => {
+    setJobToComplete(jobId);
+    setShowRatingModal(true);
+  }, []);
+
+  const handleSubmitRating = useCallback(async () => {
+    if (!jobToComplete) return;
+    setCompletingJobId(jobToComplete);
+    await markJobCompleted(jobToComplete, selectedRating || null, reviewText || null);
     setCompletingJobId(null);
-  }, [markJobCompleted]);
+    setShowRatingModal(false);
+    setJobToComplete(null);
+    setSelectedRating(0);
+    setReviewText('');
+  }, [jobToComplete, selectedRating, reviewText, markJobCompleted]);
 
   const handleOpenApplicants = useCallback((jobId) => {
     subscribeToJobApplicants(jobId);
@@ -643,10 +657,20 @@ export default function App() {
 
     const userStats = useMemo(() => {
       if (user.role === 'worker') {
+        const ratedJobs = jobs.filter(
+          j =>
+            j.assignedWorkerId === user.firebaseUid &&
+            j.status === 'completed' &&
+            j.rating
+        );
+        const averageRating =
+          ratedJobs.length > 0
+            ? (ratedJobs.reduce((sum, j) => sum + j.rating, 0) / ratedJobs.length).toFixed(1)
+            : 0;
         return {
           totalJobs: workerJobs.length,
           completed: completedWorkerJobs.length,
-          rating: 4.5,
+          rating: averageRating,
         };
       } else {
         return {
@@ -1051,6 +1075,60 @@ export default function App() {
           <p className="text-sm text-slate-600">Report if worker did not show up or issue occurred.</p>
           <Button variant="danger" fullWidth onClick={() => { disputeJob(disputeJobId); setDisputeJobId(null); }}>
             Submit Dispute
+          </Button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={showRatingModal}
+        onClose={() => {
+          setShowRatingModal(false);
+          setJobToComplete(null);
+          setSelectedRating(0);
+          setReviewText('');
+        }}
+        title="Rate Worker"
+      >
+        <div className="space-y-4">
+          <div>
+            <p className="text-sm text-slate-600 mb-2">How was the worker's performance?</p>
+            <div className="flex gap-2 justify-center">
+              {[1, 2, 3, 4, 5].map((star) => (
+                <button
+                  key={star}
+                  type="button"
+                  onClick={() => setSelectedRating(star)}
+                  className="p-1 transition-transform hover:scale-110"
+                >
+                  <Star
+                    size={32}
+                    className={star <= selectedRating
+                      ? 'text-yellow-500 fill-yellow-500'
+                      : 'text-slate-300'}
+                  />
+                </button>
+              ))}
+            </div>
+            {selectedRating > 0 && (
+              <p className="text-center text-sm text-slate-500 mt-1">{selectedRating} / 5</p>
+            )}
+          </div>
+          <div>
+            <label className="text-xs text-slate-500">Review (optional)</label>
+            <textarea
+              className="w-full border rounded-xl px-4 py-3 mt-1 outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent resize-none"
+              rows={3}
+              placeholder="How was the worker? Any feedback..."
+              value={reviewText}
+              onChange={(e) => setReviewText(e.target.value)}
+            />
+          </div>
+          <Button
+            fullWidth
+            onClick={handleSubmitRating}
+            disabled={completingJobId === jobToComplete}
+          >
+            {completingJobId === jobToComplete ? 'Submitting...' : 'Submit & Complete Job'}
           </Button>
         </div>
       </Modal>

@@ -263,12 +263,14 @@ export const AppProvider = ({ children }) => {
     toast.success('Dispute submitted');
   };
 
-  const markJobCompleted = async (jobId) => {
+  const markJobCompleted = async (jobId, rating = null, review = null) => {
     try {
       const jobRef = doc(db, 'jobs', jobId);
       await updateDoc(jobRef, {
         status: 'completed',
         completedAt: serverTimestamp(),
+        ...(rating !== null && { rating }),
+        ...(review && { review }),
       });
       toast.success('Job marked as completed');
       return true;
