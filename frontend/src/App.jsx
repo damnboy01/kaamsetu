@@ -630,12 +630,22 @@ export default function App() {
   );
 
   const ProfileView = () => {
+    const currentUserId = user.firebaseUid || user.phone || user._id;
+
+    const workerJobs = useMemo(() => {
+      if (user.role !== 'worker' || !currentUserId) return [];
+      return jobs.filter(j => j.assignedWorkerId === currentUserId);
+    }, [user, jobs, currentUserId]);
+
+    const completedWorkerJobs = useMemo(() => {
+      return workerJobs.filter(j => j.status === 'completed');
+    }, [workerJobs]);
+
     const userStats = useMemo(() => {
       if (user.role === 'worker') {
-        const appliedJobs = jobs.filter(j => j.applicants?.includes(user.phone));
         return {
-          totalJobs: appliedJobs.length,
-          completed: appliedJobs.filter(j => j.status === 'completed').length,
+          totalJobs: workerJobs.length,
+          completed: completedWorkerJobs.length,
           rating: 4.5,
         };
       } else {
@@ -645,7 +655,7 @@ export default function App() {
           completed: employerJobs.filter(j => j.status === 'booked').length,
         };
       }
-    }, [user, jobs, employerJobs]);
+    }, [user, jobs, employerJobs, workerJobs, completedWorkerJobs]);
 
     return (
       <div className="space-y-4 pb-24">
@@ -716,6 +726,42 @@ export default function App() {
             <CheckCircle size={18} className="text-green-600" />
           </div>
         </Card>
+
+        {user.role === 'worker' && (
+          <div className="space-y-3">
+            <p className="font-semibold text-slate-800">Completed Jobs ({completedWorkerJobs.length})</p>
+            {completedWorkerJobs.length === 0 ? (
+              <Card className="p-6 text-center">
+                <Award size={40} className="mx-auto text-slate-300 mb-2" />
+                <p className="text-slate-500 font-semibold text-sm">No completed jobs yet</p>
+                <p className="text-xs text-slate-400 mt-1">Jobs you finish will appear here</p>
+              </Card>
+            ) : (
+              completedWorkerJobs.map((job) => (
+                <Card key={job.id} className="p-4 space-y-2">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <p className="font-bold text-slate-900">{job.title}</p>
+                      <div className="text-xs text-slate-500 flex items-center gap-3 mt-1">
+                        <span className="flex items-center gap-1"><MapPin size={14} />{job.location}</span>
+                        <span className="flex items-center gap-1"><IndianRupee size={14} />{job.pay}/day</span>
+                      </div>
+                    </div>
+                    <span className="px-2 py-1 text-[11px] rounded-full font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                      Completed
+                    </span>
+                  </div>
+                  {job.completedAt && (
+                    <p className="text-xs text-slate-400 flex items-center gap-1">
+                      <Clock size={12} />
+                      {job.completedAt.toDate ? new Date(job.completedAt.toDate()).toLocaleDateString() : new Date(job.completedAt).toLocaleDateString()}
+                    </p>
+                  )}
+                </Card>
+              ))
+            )}
+          </div>
+        )}
 
         <Button 
           fullWidth 
