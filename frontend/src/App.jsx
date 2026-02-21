@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
-import { Toaster } from 'react-hot-toast';
+import { Toaster, toast } from 'react-hot-toast';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import {
   Phone,
@@ -212,6 +212,7 @@ export default function App() {
     assignWorkerToJob,
     identityVerified,
     verifyIdentity,
+    setUser,
   } = useApp();
 
   const [activeTab, setActiveTab] = useState('home');
@@ -309,7 +310,7 @@ export default function App() {
     const token = localStorage.getItem('kaamsetu_token');
     if (!token) return;
 
-    const res = await fetch('/auth/verify-user', {
+    const res = await fetch('http://localhost:5050/auth/verify-user', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -360,6 +361,30 @@ export default function App() {
     if (!applicantsJobId) return;
     await assignWorkerToJob(applicantsJobId, applicant);
   }, [applicantsJobId, assignWorkerToJob]);
+
+  const handleAvailabilityChange = useCallback(async (availability) => {
+    const token = localStorage.getItem('kaamsetu_token');
+    if (!token) {
+      toast.error('Session missing. Please login again.');
+      return;
+    }
+    try {
+      const res = await fetch('http://localhost:5050/profiles/me', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ availability }),
+      });
+      if (!res.ok) throw new Error('Failed to update availability');
+      setUser((prev) => (prev ? { ...prev, availability } : prev));
+      toast.success('Availability updated');
+    } catch (err) {
+      console.error(err);
+      toast.error('Could not update availability');
+    }
+  }, [setUser]);
 
   const formatAppliedDate = useCallback((appliedAt) => {
     if (!appliedAt) return 'Not available';
@@ -750,6 +775,31 @@ export default function App() {
             <CheckCircle size={18} className="text-green-600" />
           </div>
         </Card>
+
+        {user.role === 'worker' && (
+          <Card className="p-4 space-y-3">
+            <p className="font-semibold text-slate-900">Availability</p>
+            <div className="flex gap-2">
+              {['available', 'busy', 'outstation'].map((value) => {
+                const isSelected = (user.availability || 'available') === value;
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => handleAvailabilityChange(value)}
+                    className={`flex-1 py-2 px-3 rounded-xl text-sm font-semibold capitalize border transition-colors ${
+                      isSelected
+                        ? 'bg-orange-500 text-white border-orange-500'
+                        : 'bg-white text-slate-600 border-slate-200 hover:border-orange-300'
+                    }`}
+                  >
+                    {value === 'outstation' ? 'Outstation' : value === 'busy' ? 'Busy' : 'Available'}
+                  </button>
+                );
+              })}
+            </div>
+          </Card>
+        )}
 
         {user.role === 'worker' && (
           <div className="space-y-3">

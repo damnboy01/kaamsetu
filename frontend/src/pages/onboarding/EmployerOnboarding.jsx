@@ -81,7 +81,7 @@ export default function EmployerOnboarding() {
 
     setLoading(true);
     try {
-      const response = await fetch('/profiles/me', {
+      const response = await fetch('http://localhost:5050/profiles/me', {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',

@@ -272,6 +272,25 @@ export const AppProvider = ({ children }) => {
         ...(rating !== null && { rating }),
         ...(review && { review }),
       });
+
+      // Sync worker rating to MongoDB so Profile.rating and reviewCount update
+      const job = jobs.find((j) => j.id === jobId);
+      const assignedWorkerId = job?.assignedWorkerId;
+      if (rating !== null && assignedWorkerId) {
+        try {
+          const res = await fetch('http://localhost:5050/ratings/update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ firebaseUid: assignedWorkerId, rating: Number(rating) }),
+          });
+          if (!res.ok) {
+            console.error('Failed to sync worker rating to backend', await res.text());
+          }
+        } catch (err) {
+          console.error('Error syncing worker rating:', err);
+        }
+      }
+
       toast.success('Job marked as completed');
       return true;
     } catch (error) {
@@ -433,6 +452,7 @@ export const AppProvider = ({ children }) => {
     language,
     setLanguage,
     user,
+    setUser,
     authRoute,
     otpSent,
     sendOtp,
